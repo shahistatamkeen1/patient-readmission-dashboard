@@ -1,60 +1,75 @@
 import os
-import joblib
-import pandas as pd
 import streamlit as st
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+)
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Patient Readmission Dashboard", layout="wide")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_PATH = os.path.join(BASE_DIR, "data", "processed", "cleaned_data.csv")
-MODEL_PATH = os.path.join(BASE_DIR, "models", "logistic_regression_model.pkl")
-RESULTS_PATH = os.path.join(BASE_DIR, "outputs", "reports", "model_results.csv")
-LR_CM_PATH = os.path.join(BASE_DIR, "outputs", "charts", "logistic_confusion_matrix.png")
-RF_CM_PATH = os.path.join(BASE_DIR, "outputs", "charts", "random_forest_confusion_matrix.png")
-ROC_PATH = os.path.join(BASE_DIR, "outputs", "charts", "roc_curve_comparison.png")
+DATA_PATH = os.path.join(BASE_DIR, "assets", "sample_cleaned_data.csv")
 
 
 @st.cache_data
-def load_preview_data():
-    return pd.read_csv(DATA_PATH, nrows=200)
-
-
-@st.cache_data
-def load_full_data_for_metrics():
-    df = pd.read_csv(DATA_PATH, usecols=["target_readmit_30"])
-    return df
-
-
-@st.cache_data
-def load_model_results():
-    if os.path.exists(RESULTS_PATH):
-        return pd.read_csv(RESULTS_PATH)
-    return None
+def load_data():
+    return pd.read_csv(DATA_PATH)
 
 
 @st.cache_resource
-def load_model():
-    return joblib.load(MODEL_PATH)
+def train_model(df):
+    X = df.drop("target_readmit_30", axis=1)
+    y = df["target_readmit_30"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    model = LogisticRegression(max_iter=500, class_weight="balanced")
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    metrics = {
+        "accuracy": accuracy_score(y_test, y_pred),
+        "precision": precision_score(y_test, y_pred, zero_division=0),
+        "recall": recall_score(y_test, y_pred, zero_division=0),
+        "f1": f1_score(y_test, y_pred, zero_division=0),
+        "roc_auc": roc_auc_score(y_test, y_prob),
+        "cm": confusion_matrix(y_test, y_pred),
+    }
+
+    return model, metrics
 
 
 st.title("🏥 Patient Readmission Risk Analysis Dashboard")
-st.markdown("An interactive healthcare analytics dashboard for predicting 30-day patient readmission risk.")
+st.markdown("A lightweight deployment version of the healthcare readmission risk project.")
 
-# Load small/fast pieces first
 try:
-    metrics_df = load_full_data_for_metrics()
-    preview_df = load_preview_data()
-    lr_model = load_model()
-    results_df = load_model_results()
+    df = load_data()
 except Exception as e:
-    st.error(f"Error loading project files: {e}")
+    st.error(f"Could not load sample dataset: {e}")
     st.stop()
 
-# Overview
+try:
+    model, metrics = train_model(df)
+except Exception as e:
+    st.error(f"Could not train model from sample dataset: {e}")
+    st.stop()
+
 st.header("📊 Dataset Overview")
 
-total_patients = len(metrics_df)
-high_risk = int(metrics_df["target_readmit_30"].sum())
+total_patients = len(df)
+high_risk = int(df["target_readmit_30"].sum())
 low_risk = total_patients - high_risk
 high_risk_pct = round((high_risk / total_patients) * 100, 2)
 
@@ -64,90 +79,66 @@ c2.metric("High Risk Patients", f"{high_risk:,}")
 c3.metric("Low Risk Patients", f"{low_risk:,}")
 c4.metric("High Risk %", f"{high_risk_pct}%")
 
-# Model performance
-st.header("🤖 Model Performance Summary")
-if results_df is not None:
-    st.dataframe(results_df, use_container_width=True)
-else:
-    st.warning("model_results.csv not found.")
+st.header("🤖 Model Performance")
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("Accuracy", f"{metrics['accuracy']:.3f}")
+m2.metric("Precision", f"{metrics['precision']:.3f}")
+m3.metric("Recall", f"{metrics['recall']:.3f}")
+m4.metric("F1 Score", f"{metrics['f1']:.3f}")
+m5.metric("ROC-AUC", f"{metrics['roc_auc']:.3f}")
 
-# Distribution
 st.header("📌 Readmission Distribution")
-distribution = pd.DataFrame(
-    {
-        "Category": ["Low Risk (0)", "High Risk (1)"],
-        "Count": [low_risk, high_risk],
-    }
-).set_index("Category")
-st.bar_chart(distribution)
+dist_df = pd.DataFrame({
+    "Category": ["Low Risk (0)", "High Risk (1)"],
+    "Count": [low_risk, high_risk]
+}).set_index("Category")
+st.bar_chart(dist_df)
 
-# Data preview
-st.header("🔍 Cleaned Data Preview")
-st.caption("Showing first 200 rows only for faster loading.")
-st.dataframe(preview_df.head(10), use_container_width=True)
+st.header("🔍 Data Preview")
+st.dataframe(df.head(10), use_container_width=True)
 
-# Evaluation charts
-st.header("📈 Evaluation Charts")
+st.header("📈 Confusion Matrix")
+fig, ax = plt.subplots()
+cm = metrics["cm"]
+ax.imshow(cm)
+ax.set_title("Logistic Regression Confusion Matrix")
+ax.set_xlabel("Predicted")
+ax.set_ylabel("Actual")
+for i in range(cm.shape[0]):
+    for j in range(cm.shape[1]):
+        ax.text(j, i, cm[i, j], ha="center", va="center")
+st.pyplot(fig)
 
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Logistic Regression Confusion Matrix")
-    if os.path.exists(LR_CM_PATH):
-        st.image(LR_CM_PATH, use_container_width=True)
-    else:
-        st.info("Logistic confusion matrix image not found.")
-
-with col2:
-    st.subheader("Random Forest Confusion Matrix")
-    if os.path.exists(RF_CM_PATH):
-        st.image(RF_CM_PATH, use_container_width=True)
-    else:
-        st.info("Random forest confusion matrix image not found.")
-
-st.subheader("ROC Curve Comparison")
-if os.path.exists(ROC_PATH):
-    st.image(ROC_PATH, use_container_width=True)
-else:
-    st.info("ROC curve image not found.")
-
-# Prediction demo
 st.header("🧠 Predict Readmission Risk")
-st.caption("This demo updates a sample patient record with a few editable values.")
+st.caption("This uses a sample patient row and lets you change a few numeric values.")
 
-try:
-    full_sample = pd.read_csv(DATA_PATH, nrows=1)
-    input_row = full_sample.drop(columns=["target_readmit_30"]).iloc[0].copy()
+input_row = df.drop(columns=["target_readmit_30"]).iloc[0].copy()
 
-    time_in_hospital = st.slider("Time in Hospital", 1, 14, int(input_row.get("time_in_hospital", 5)))
-    num_lab_procedures = st.slider("Number of Lab Procedures", 1, 150, int(input_row.get("num_lab_procedures", 40)))
-    num_medications = st.slider("Number of Medications", 1, 80, int(input_row.get("num_medications", 10)))
-    number_inpatient = st.slider("Previous Inpatient Visits", 0, 20, int(input_row.get("number_inpatient", 1)))
-    number_emergency = st.slider("Previous Emergency Visits", 0, 20, int(input_row.get("number_emergency", 0)))
-    number_outpatient = st.slider("Previous Outpatient Visits", 0, 50, int(input_row.get("number_outpatient", 0)))
+editable_fields = [
+    "time_in_hospital",
+    "num_lab_procedures",
+    "num_medications",
+    "number_inpatient",
+    "number_emergency",
+    "number_outpatient",
+]
 
-    if st.button("Predict Risk"):
-        input_row["time_in_hospital"] = time_in_hospital
-        input_row["num_lab_procedures"] = num_lab_procedures
-        input_row["num_medications"] = num_medications
-        input_row["number_inpatient"] = number_inpatient
-        input_row["number_emergency"] = number_emergency
-        input_row["number_outpatient"] = number_outpatient
+for field in editable_fields:
+    if field in input_row.index:
+        current_value = int(input_row[field])
+        max_val = max(current_value + 20, 20)
+        input_row[field] = st.slider(field.replace("_", " ").title(), 0, max_val, current_value)
 
-        input_df = pd.DataFrame([input_row])
+if st.button("Predict Risk"):
+    input_df = pd.DataFrame([input_row])
+    prediction = model.predict(input_df)[0]
+    probability = model.predict_proba(input_df)[0][1]
 
-        prediction = lr_model.predict(input_df)[0]
-        probability = lr_model.predict_proba(input_df)[0][1]
-
-        st.write(f"**Predicted Readmission Probability:** {probability:.2%}")
-
-        if prediction == 1:
-            st.error("⚠️ High Risk of Readmission within 30 days")
-        else:
-            st.success("✅ Low Risk of Readmission within 30 days")
-
-except Exception as e:
-    st.warning(f"Prediction section could not load: {e}")
+    st.write(f"**Predicted Readmission Probability:** {probability:.2%}")
+    if prediction == 1:
+        st.error("⚠️ High Risk of Readmission within 30 days")
+    else:
+        st.success("✅ Low Risk of Readmission within 30 days")
 
 st.markdown("---")
 st.markdown("Built by Shahista Tamkeen")
